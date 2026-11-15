@@ -15,7 +15,23 @@ BOT_TOKEN = os.environ["BOT_TOKEN"]
 ADMIN_ID = int(os.environ["ADMIN_ID"])
 DB_PATH = os.getenv("DB_PATH", "simora.sqlite3")
 
-OPERATORS = ["МТС", "МегаФон", "Билайн", "T2", "Другой оператор"]
+OPERATORS = [
+    "МТС",
+    "Билайн",
+    "Добросвязь",
+    "Сбер",
+    "Т2",
+    "Миранда",
+]
+
+OPERATOR_REWARDS = {
+    "МТС": "$19",
+    "Билайн": "$20",
+    "Добросвязь": "$19",
+    "Сбер": "$16",
+    "Т2": "$20",
+    "Миранда": "$20",
+}
 STATUSES = {
     "new": "Новая",
     "review": "На проверке",
@@ -57,11 +73,15 @@ def init_db():
             operator TEXT PRIMARY KEY,
             price TEXT NOT NULL DEFAULT 'Уточняется'
         )""")
-        for operator in OPERATORS:
-            conn.execute(
-                "INSERT OR IGNORE INTO prices(operator, price) VALUES (?, ?)",
-                (operator, "Уточняется"),
-            )
+        for operator, price in OPERATOR_REWARDS.items():
+    conn.execute(
+        "INSERT OR IGNORE INTO prices(operator, price) VALUES (?, ?)",
+        (operator, price),
+    )
+    conn.execute(
+        "UPDATE prices SET price=? WHERE operator=? AND price='Уточняется'",
+        (price, operator),
+    )
 
 
 def save_user(user):
@@ -78,10 +98,12 @@ def save_user(user):
 
 def main_menu():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📥 Сдать eSIM", callback_data="sell")],
-        [InlineKeyboardButton("👤 Профиль", callback_data="profile"),
-         InlineKeyboardButton("📋 Мои заявки", callback_data="my_requests")],
-        [InlineKeyboardButton("ℹ️ Информация", callback_data="info")],
+        [InlineKeyboardButton("📲 Сдать eSIM", callback_data="sell")],
+        [
+            InlineKeyboardButton("👤 Профиль", callback_data="profile"),
+            InlineKeyboardButton("💰 Баланс", callback_data="balance"),
+        ],
+        [InlineKeyboardButton("📱 Мои номера", callback_data="my_requests")],
     ])
 
 
@@ -132,12 +154,26 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text("Нет доступа.")
         return
 
-    if data == "sell":
-        buttons = [[InlineKeyboardButton(op, callback_data=f"op:{op}")]
-                   for op in OPERATORS]
+        if data == "sell":
+        with db() as conn:
+            rows = conn.execute(
+                "SELECT operator, price FROM prices"
+            ).fetchall()
+
+        prices = {row["operator"]: row["price"] for row in rows}
+
+        buttons = [
+            [InlineKeyboardButton(
+                f"{op} — {prices.get(op, OPERATOR_REWARDS[op])}",
+                callback_data=f"op:{op}"
+            )]
+            for op in OPERATORS
+        ]
+
         await q.edit_message_text(
             "Выберите оператора eSIM:",
             reply_markup=InlineKeyboardMarkup(buttons),
+        )
         )
     elif data.startswith("op:"):
         operator = data.split(":", 1)[1]
@@ -151,6 +187,11 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "или оператор не разрешает его передачу. Для первичной заявки "
             "пришлите фото подтверждения без секретных кодов и персональных данных."
         )
+    elif data == "balance":
+    await q.edit_message_text(
+        "💰 Раздел «Баланс» готовится к запуску.",
+        reply_markup=main_menu(),
+    )
     elif data == "profile":
         with db() as conn:
             count = conn.execute(
