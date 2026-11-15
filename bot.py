@@ -73,15 +73,15 @@ def init_db():
             operator TEXT PRIMARY KEY,
             price TEXT NOT NULL DEFAULT 'Уточняется'
         )""")
-        for operator, price in OPERATOR_REWARDS.items():
-    conn.execute(
-        "INSERT OR IGNORE INTO prices(operator, price) VALUES (?, ?)",
-        (operator, price),
-    )
-    conn.execute(
-        "UPDATE prices SET price=? WHERE operator=? AND price='Уточняется'",
-        (price, operator),
-    )
+                for operator, price in OPERATOR_REWARDS.items():
+            conn.execute(
+                "INSERT OR IGNORE INTO prices(operator, price) VALUES (?, ?)",
+                (operator, price),
+            )
+            conn.execute(
+                "UPDATE prices SET price=? WHERE operator=? AND price='Уточняется'",
+                (price, operator),
+            )
 
 
 def save_user(user):
@@ -154,7 +154,7 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text("Нет доступа.")
         return
 
-        if data == "sell":
+            if data == "sell":
         with db() as conn:
             rows = conn.execute(
                 "SELECT operator, price FROM prices"
@@ -174,7 +174,7 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Выберите оператора eSIM:",
             reply_markup=InlineKeyboardMarkup(buttons),
         )
-        )
+
     elif data.startswith("op:"):
         operator = data.split(":", 1)[1]
         context.user_data["operator"] = operator
@@ -187,11 +187,14 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "или оператор не разрешает его передачу. Для первичной заявки "
             "пришлите фото подтверждения без секретных кодов и персональных данных."
         )
+
     elif data == "balance":
-    await q.edit_message_text(
-        "💰 Раздел «Баланс» готовится к запуску.",
-        reply_markup=main_menu(),
-    )
+        await q.edit_message_text(
+            "💰 Раздел «Баланс» готовится к запуску.",
+            reply_markup=main_menu(),
+        )
+
+    elif data == "profile":
     elif data == "profile":
         with db() as conn:
             count = conn.execute(
