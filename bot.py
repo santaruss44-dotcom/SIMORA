@@ -58,6 +58,7 @@ def db():
 
 
 
+
 def init_db():
     with db() as conn:
         conn.execute("""CREATE TABLE IF NOT EXISTS users (
@@ -103,6 +104,17 @@ def init_db():
             amount REAL NOT NULL,
             description TEXT NOT NULL,
             created_at TEXT NOT NULL
+        )""")
+
+        conn.execute("""CREATE TABLE IF NOT EXISTS withdrawals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            method TEXT NOT NULL,
+            invoice_link TEXT NOT NULL,
+            amount REAL NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            created_at TEXT NOT NULL,
+            processed_at TEXT
         )""")
 
 def save_user(user):
