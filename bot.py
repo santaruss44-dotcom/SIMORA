@@ -374,6 +374,7 @@ async def set_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("Оператор не найден. Проверьте название.")
 
+
 async def menu_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
 
@@ -383,7 +384,9 @@ async def menu_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Главное меню SIMORA. Выберите действие:",
             reply_markup=main_menu(),
         )
-        if context.user_data.get("choosing_operator") and any(
+        return
+
+    if context.user_data.get("choosing_operator") and any(
         text.startswith(op + " — ") for op in OPERATORS
     ):
         operator = text.split(" — ", 1)[0]
@@ -394,18 +397,6 @@ async def menu_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             f"Вы выбрали: {operator}\n\n"
             "Теперь отправьте фотографию подтверждения eSIM.",
-            reply_markup=back_menu(),
-        )
-        return
-        await update.message.reply_text(
-            f"Вы выбрали: {operator}\n\n"
-            "Теперь отправьте фотографию подтверждения eSIM.",
-            reply_markup=back_menu(),
-        )
-        return
-
-        await update.message.reply_text(
-            f"Вы выбрали: {text}\n\nТеперь отправьте фотографию подтверждения eSIM.",
             reply_markup=back_menu(),
         )
         return
@@ -474,8 +465,9 @@ async def menu_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif context.user_data.get("awaiting_photo"):
         await update.message.reply_text(
-            "Пожалуйста, отправьте фотографию подтверждения eSIM или нажмите «⬅️ Назад»."
+            "Отправьте фотографию подтверждения eSIM или нажмите «⬅️ Назад»."
         )
+
 def main():
     init_db()
     app = Application.builder().token(BOT_TOKEN).build()
