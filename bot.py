@@ -357,9 +357,7 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=admin_menu(),
         )
 
-            await q.edit_message_caption(
-                caption=f"Заявка #{submission_id}: {STATUSES[new_status]}"
-            )
+            
 
 
 async def receive_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -500,7 +498,7 @@ async def menu_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=back_menu(),
         )
 
-     elif text == "💰 Баланс":
+  elif text == "💰 Баланс":
         user_id = update.effective_user.id
 
         with db() as conn:
