@@ -73,7 +73,8 @@ def init_db():
             operator TEXT PRIMARY KEY,
             price TEXT NOT NULL DEFAULT 'Уточняется'
         )""")
-                for operator, price in OPERATOR_REWARDS.items():
+
+        for operator, price in OPERATOR_REWARDS.items():
             conn.execute(
                 "INSERT OR IGNORE INTO prices(operator, price) VALUES (?, ?)",
                 (operator, price),
@@ -82,8 +83,6 @@ def init_db():
                 "UPDATE prices SET price=? WHERE operator=? AND price='Уточняется'",
                 (price, operator),
             )
-
-
 def save_user(user):
     with db() as conn:
         conn.execute(
@@ -144,6 +143,7 @@ async def show_prices(chat_id, context):
     await context.bot.send_message(chat_id, text)
 
 
+
 async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
@@ -154,7 +154,7 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text("Нет доступа.")
         return
 
-            if data == "sell":
+    if data == "sell":
         with db() as conn:
             rows = conn.execute(
                 "SELECT operator, price FROM prices"
@@ -195,7 +195,6 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     elif data == "profile":
-    elif data == "profile":
         with db() as conn:
             count = conn.execute(
                 "SELECT COUNT(*) FROM submissions WHERE user_id=?", (user_id,)
@@ -204,6 +203,7 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Ваш профиль\nTelegram ID: {user_id}\nЗаявок: {count}",
             reply_markup=main_menu(),
         )
+
     elif data == "my_requests":
         with db() as conn:
             rows = conn.execute(
@@ -218,6 +218,7 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 for r in rows
             )
         await q.edit_message_text(text, reply_markup=main_menu())
+
     elif data == "info":
         await q.edit_message_text(
             "SIMORA принимает заявки на добровольную продажу eSIM. "
@@ -225,6 +226,7 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "активации и данные, которыми не имеете права распоряжаться.",
             reply_markup=main_menu(),
         )
+
     elif data == "admin_new":
         with db() as conn:
             rows = conn.execute(
@@ -238,14 +240,16 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"#{r['id']} | {r['operator']} | пользователь {r['user_id']}"
             for r in rows
         ) + "\n\nЧтобы открыть заявку, отправьте /request НОМЕР")
+
     elif data == "admin_prices":
         with db() as conn:
             rows = conn.execute("SELECT operator, price FROM prices").fetchall()
         text = "Текущие цены:\n" + "\n".join(
             f"{r['operator']}: {r['price']}" for r in rows
         )
-        text += "\n\nИзменить: /price НАЗВАНИЕ_ОПЕРАТОРА ЦЕНА\nПример: /price МТС 500"
+        text += "\n\nИзменить: /price НАЗВАНИЕ_ОПЕРАТОРА ЦЕНА\nПример: /price МТС $19"
         await q.edit_message_text(text, reply_markup=admin_menu())
+
     elif data == "admin_stats":
         with db() as conn:
             users = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
@@ -257,6 +261,7 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Пользователей: {users}\nВсего заявок: {apps}\nНовых заявок: {new}",
             reply_markup=admin_menu(),
         )
+
     elif data.startswith("decision:"):
         _, decision, submission_id = data.split(":")
         submission_id = int(submission_id)
