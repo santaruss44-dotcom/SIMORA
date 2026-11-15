@@ -383,12 +383,20 @@ async def menu_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Главное меню SIMORA. Выберите действие:",
             reply_markup=main_menu(),
         )
-        return
-
-    if context.user_data.get("choosing_operator") and text in OPERATORS:
-        context.user_data["operator"] = text
+    if context.user_data.get("choosing_operator") and any(
+        text.startswith(op + " — ") for op in OPERATORS
+    ):
+        operator = text.split(" — ", 1)[0]
+        context.user_data["operator"] = operator
         context.user_data["awaiting_photo"] = True
         context.user_data["choosing_operator"] = False
+
+        await update.message.reply_text(
+            f"Вы выбрали: {operator}\n\n"
+            "Теперь отправьте фотографию подтверждения eSIM.",
+            reply_markup=back_menu(),
+        )
+        return
 
         await update.message.reply_text(
             f"Вы выбрали: {text}\n\nТеперь отправьте фотографию подтверждения eSIM.",
