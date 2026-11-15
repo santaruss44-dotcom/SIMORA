@@ -359,24 +359,6 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=admin_menu(),
         )
 
-    elif data.startswith("decision:"):
-        _, decision, submission_id = data.split(":")
-        submission_id = int(submission_id)
-        new_status = "accepted" if decision == "accept" else "rejected"
-        with db() as conn:
-            row = conn.execute(
-                "SELECT user_id FROM submissions WHERE id=?", (submission_id,)
-            ).fetchone()
-            if row:
-                conn.execute(
-                    "UPDATE submissions SET status=? WHERE id=?",
-                    (new_status, submission_id),
-                )
-        if row:
-            await context.bot.send_message(
-                row["user_id"],
-                f"По заявке #{submission_id} обновлён статус: {STATUSES[new_status]}."
-            )
             await q.edit_message_caption(
                 caption=f"Заявка #{submission_id}: {STATUSES[new_status]}"
             )
@@ -520,9 +502,19 @@ async def menu_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=back_menu(),
         )
 
-    elif text == "💰 Баланс":
+        elif text == "💰 Баланс":
+        user_id = update.effective_user.id
+
+        with db() as conn:
+            row = conn.execute(
+                "SELECT amount FROM balances WHERE user_id=?",
+                (user_id,),
+            ).fetchone()
+
+            amount = row["amount"] if row else 0
+
         await update.message.reply_text(
-            "💰 Раздел «Баланс» готовится к запуску.",
+            f"💰 Ваш баланс: ${amount:.2f}",
             reply_markup=back_menu(),
         )
 
