@@ -57,6 +57,7 @@ def db():
     return conn
 
 
+
 def init_db():
     with db() as conn:
         conn.execute("""CREATE TABLE IF NOT EXISTS users (
@@ -65,6 +66,7 @@ def init_db():
             first_name TEXT,
             joined_at TEXT
         )""")
+
         conn.execute("""CREATE TABLE IF NOT EXISTS submissions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER NOT NULL,
@@ -73,6 +75,7 @@ def init_db():
             status TEXT NOT NULL DEFAULT 'new',
             created_at TEXT NOT NULL
         )""")
+
         conn.execute("""CREATE TABLE IF NOT EXISTS prices (
             operator TEXT PRIMARY KEY,
             price TEXT NOT NULL DEFAULT 'Уточняется'
@@ -87,6 +90,21 @@ def init_db():
                 "UPDATE prices SET price=? WHERE operator=? AND price='Уточняется'",
                 (price, operator),
             )
+
+        conn.execute("""CREATE TABLE IF NOT EXISTS balances (
+            user_id INTEGER PRIMARY KEY,
+            amount REAL NOT NULL DEFAULT 0
+        )""")
+
+        conn.execute("""CREATE TABLE IF NOT EXISTS transactions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            submission_id INTEGER UNIQUE,
+            amount REAL NOT NULL,
+            description TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )""")
+
 def save_user(user):
     with db() as conn:
         conn.execute(
@@ -164,7 +182,7 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = q.from_user.id
     data = q.data
 
-    if data.startswith("admin_") and user_id != ADMIN_ID:
+    if (data.startswith("admin_") or data.startswith("decision:")) and user_id != ADMIN_ID:
         await q.edit_message_text("Нет доступа.")
         return
 
@@ -189,17 +207,82 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup(buttons),
         )
 
-    elif data.startswith("op:"):
-        operator = data.split(":", 1)[1]
-        context.user_data["operator"] = operator
-        context.user_data["awaiting_photo"] = True
-        await q.edit_message_text(
-            f"Вы выбрали: {operator}.\n\n"
-            "Перед отправкой убедитесь, что eSIM принадлежит вам и оператор "
-            "разрешает её передачу другому лицу.\n"
-            "Не отправляйте QR-код активации, если он содержит секретный код "
-            "или оператор не разрешает его передачу. Для первичной заявки "
-            "пришлите фото подтверждения без секретных кодов и персональных данных."
+    
+    elif data.startswith("decision:"):
+        _, decision, submission_id = data.split(":")
+        submission_id = int(submission_id)
+
+        if decision not in ("accept", "reject"):
+            return
+
+        with db() as conn:
+            row = conn.execute(
+                "SELECT user_id, operator, status FROM submissions WHERE id=?",
+                (submission_id,),
+            ).fetchone()
+
+            if not row:
+                await q.answer("Заявка не найдена.", show_alert=True)
+                return
+
+            if row["status"] != "new":
+                await q.answer("Эта заявка уже обработана.", show_alert=True)
+                return
+
+            new_status = "accepted" if decision == "accept" else "rejected"
+
+            conn.execute(
+                "UPDATE submissions SET status=? WHERE id=? AND status='new'",
+                (new_status, submission_id),
+            )
+
+            if decision == "accept":
+                price_row = conn.execute(
+                    "SELECT price FROM prices WHERE operator=?",
+                    (row["operator"],),
+                ).fetchone()
+
+                if not price_row or not str(price_row["price"]).startswith("$"):
+                    await q.answer("Не удалось определить цену.", show_alert=True)
+                    return
+
+                amount = float(str(price_row["price"]).replace("$", "").strip())
+
+                conn.execute(
+                    "INSERT OR IGNORE INTO balances(user_id, amount) VALUES (?, 0)",
+                    (row["user_id"],),
+                )
+
+                conn.execute(
+                    "INSERT INTO transactions "
+                    "(user_id, submission_id, amount, description, created_at) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (
+                        row["user_id"],
+                        submission_id,
+                        amount,
+                        f"Начисление за {row['operator']}",
+                        datetime.now(timezone.utc).isoformat(),
+                    ),
+                )
+
+                conn.execute(
+                    "UPDATE balances SET amount=amount+? WHERE user_id=?",
+                    (amount, row["user_id"]),
+                )
+
+        await context.bot.send_message(
+            row["user_id"],
+            f"Заявка #{submission_id}: {STATUSES[new_status]}."
+            + (
+                f"\nНачислено: ${amount:.2f}"
+                if decision == "accept"
+                else ""
+            ),
+        )
+
+        await q.edit_message_caption(
+            caption=f"Заявка #{submission_id}: {STATUSES[new_status]}"
         )
 
     elif data == "balance":
