@@ -129,16 +129,19 @@ def save_user(user):
         )
 
 
+
 def main_menu():
     keyboard = [
         [KeyboardButton("📲 Сдать eSIM"), KeyboardButton("👤 Профиль")],
         [KeyboardButton("💰 Баланс"), KeyboardButton("📱 Мои номера")],
+        [KeyboardButton("💸 Вывести средства")],
     ]
     return ReplyKeyboardMarkup(
         keyboard,
         resize_keyboard=True,
         is_persistent=True,
     )
+
 
 
 def back_menu():
@@ -530,8 +533,10 @@ async def set_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Оператор не найден. Проверьте название.")
 
 
+
 async def menu_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
+    user_id = update.effective_user.id
 
     if text == "⬅️ Назад":
         context.user_data.clear()
@@ -541,6 +546,218 @@ async def menu_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    # Выбор способа вывода
+    if context.user_data.get("choosing_withdraw_method"):
+        if text not in ("CryptoBot", "xRocket"):
+            await update.message.reply_text(
+                "Выберите CryptoBot или xRocket."
+            )
+            return
+
+        context.user_data["withdraw_method"] = text
+
+        with db() as conn:
+            saved = conn.execute(
+                "SELECT invoice_link FROM withdrawal_links "
+                "WHERE user_id=? AND method=?",
+                (user_id, text),
+            ).fetchone()
+
+        if saved:
+            context.user_data["saved_withdraw_link"] = saved["invoice_link"]
+            context.user_data["choosing_saved_withdraw_link"] = True
+
+            keyboard = [
+                [KeyboardButton("♻️ Использовать сохранённую ссылку")],
+                [KeyboardButton("✏️ Изменить ссылку")],
+                [KeyboardButton("⬅️ Назад")],
+            ]
+
+            await update.message.reply_text(
+                f"Для {text} у вас уже есть сохранённая ссылка:\n"
+                f"{saved['invoice_link']}\n\n"
+                "Использовать её или отправить новую?",
+                reply_markup=ReplyKeyboardMarkup(
+                    keyboard,
+                    resize_keyboard=True,
+                ),
+            )
+        else:
+            context.user_data["awaiting_withdraw_link"] = True
+
+            await update.message.reply_text(
+                f"Отправьте ссылку на многоразовый счёт {text}:",
+                reply_markup=back_menu(),
+            )
+        return
+
+    # Использование старой или ввод новой ссылки
+    if context.user_data.get("choosing_saved_withdraw_link"):
+        if text == "♻️ Использовать сохранённую ссылку":
+            context.user_data["withdraw_link"] = (
+                context.user_data["saved_withdraw_link"]
+            )
+            context.user_data["choosing_saved_withdraw_link"] = False
+            context.user_data["awaiting_withdraw_amount"] = True
+
+            await update.message.reply_text(
+                "Введите сумму вывода в долларах, например: 20",
+                reply_markup=back_menu(),
+            )
+            return
+
+        if text == "✏️ Изменить ссылку":
+            context.user_data["choosing_saved_withdraw_link"] = False
+            context.user_data["awaiting_withdraw_link"] = True
+
+            await update.message.reply_text(
+                "Отправьте новую ссылку на многоразовый счёт:",
+                reply_markup=back_menu(),
+            )
+            return
+
+        await update.message.reply_text(
+            "Выберите использование старой ссылки или изменение ссылки."
+        )
+        return
+
+    # Сохранение новой ссылки
+    if context.user_data.get("awaiting_withdraw_link"):
+        link = text.strip()
+
+        if not link.startswith("https://"):
+            await update.message.reply_text(
+                "❌ Отправьте корректную ссылку, начинающуюся с https://"
+            )
+            return
+
+        method = context.user_data["withdraw_method"]
+
+        with db() as conn:
+            conn.execute(
+                "INSERT INTO withdrawal_links "
+                "(user_id, method, invoice_link, updated_at) "
+                "VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(user_id, method) DO UPDATE SET "
+                "invoice_link=excluded.invoice_link, "
+                "updated_at=excluded.updated_at",
+                (
+                    user_id,
+                    method,
+                    link,
+                    datetime.now(timezone.utc).isoformat(),
+                ),
+            )
+
+        context.user_data["withdraw_link"] = link
+        context.user_data["awaiting_withdraw_link"] = False
+        context.user_data["awaiting_withdraw_amount"] = True
+
+        await update.message.reply_text(
+            "✅ Ссылка сохранена!\n\n"
+            "Теперь введите сумму вывода в долларах, например: 20",
+            reply_markup=back_menu(),
+        )
+        return
+
+    # Создание заявки на вывод и резервирование средств
+    if context.user_data.get("awaiting_withdraw_amount"):
+        try:
+            amount = float(text.replace("$", "").replace(",", ".").strip())
+        except (ValueError, TypeError):
+            await update.message.reply_text(
+                "Введите сумму числом, например: 20"
+            )
+            return
+
+        if not 0 < amount < float("inf"):
+            await update.message.reply_text(
+                "❌ Сумма должна быть больше нуля."
+            )
+            return
+
+        method = context.user_data["withdraw_method"]
+        link = context.user_data["withdraw_link"]
+
+        with db() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+
+            balance_row = conn.execute(
+                "SELECT amount FROM balances WHERE user_id=?",
+                (user_id,),
+            ).fetchone()
+
+            balance = balance_row["amount"] if balance_row else 0
+
+            if amount > balance:
+                await update.message.reply_text(
+                    f"❌ Недостаточно средств.\n"
+                    f"Ваш баланс: ${balance:.2f}",
+                    reply_markup=back_menu(),
+                )
+                return
+
+            updated = conn.execute(
+                "UPDATE balances SET amount=amount-? "
+                "WHERE user_id=? AND amount>=?",
+                (amount, user_id, amount),
+            )
+
+            if updated.rowcount != 1:
+                await update.message.reply_text(
+                    "Не удалось зарезервировать средства. "
+                    "Проверьте баланс и попробуйте снова."
+                )
+                return
+
+            cursor = conn.execute(
+                "INSERT INTO withdrawals "
+                "(user_id, method, invoice_link, amount, status, created_at) "
+                "VALUES (?, ?, ?, ?, 'pending', ?)",
+                (
+                    user_id,
+                    method,
+                    link,
+                    amount,
+                    datetime.now(timezone.utc).isoformat(),
+                ),
+            )
+
+            withdrawal_id = cursor.lastrowid
+
+        context.user_data.clear()
+
+        await update.message.reply_text(
+            f"✅ Заявка на вывод #{withdrawal_id} отправлена администратору.\n\n"
+            f"Способ: {method}\n"
+            f"Сумма: ${amount:.2f}\n"
+            "Средства зарезервированы до решения администратора.",
+            reply_markup=main_menu(),
+        )
+
+        await context.bot.send_message(
+            ADMIN_ID,
+            f"💸 НОВАЯ ЗАЯВКА НА ВЫВОД #{withdrawal_id}\n\n"
+            f"Пользователь: {user_id}\n"
+            f"Способ: {method}\n"
+            f"Сумма: ${amount:.2f}\n"
+            f"Многоразовый счёт:\n{link}",
+            reply_markup=InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton(
+                        "✅ Заявка оплачена",
+                        callback_data=f"withdraw_paid:{withdrawal_id}",
+                    ),
+                    InlineKeyboardButton(
+                        "❌ Отказать",
+                        callback_data=f"withdraw_reject:{withdrawal_id}",
+                    ),
+                ]
+            ]),
+        )
+        return
+
+    # Выбор оператора eSIM
     if context.user_data.get("choosing_operator") and any(
         text.startswith(op + " — ") for op in OPERATORS
     ):
@@ -558,12 +775,16 @@ async def menu_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if text == "📲 Сдать eSIM":
         with db() as conn:
-            rows = conn.execute("SELECT operator, price FROM prices").fetchall()
+            rows = conn.execute(
+                "SELECT operator, price FROM prices"
+            ).fetchall()
 
         prices = {row["operator"]: row["price"] for row in rows}
 
         keyboard = [
-            [KeyboardButton(f"{op} — {prices.get(op, OPERATOR_REWARDS[op])}")]
+            [KeyboardButton(
+                f"{op} — {prices.get(op, OPERATOR_REWARDS[op])}"
+            )]
             for op in OPERATORS
         ]
         keyboard.append([KeyboardButton("⬅️ Назад")])
@@ -580,7 +801,6 @@ async def menu_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     elif text == "👤 Профиль":
-        user_id = update.effective_user.id
         with db() as conn:
             count = conn.execute(
                 "SELECT COUNT(*) FROM submissions WHERE user_id=?",
@@ -593,8 +813,6 @@ async def menu_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     elif text == "💰 Баланс":
-        user_id = update.effective_user.id
-
         with db() as conn:
             row = conn.execute(
                 "SELECT amount FROM balances WHERE user_id=?",
@@ -608,8 +826,38 @@ async def menu_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=back_menu(),
         )
 
+    elif text == "💸 Вывести средства":
+        with db() as conn:
+            row = conn.execute(
+                "SELECT amount FROM balances WHERE user_id=?",
+                (user_id,),
+            ).fetchone()
+
+        balance = row["amount"] if row else 0
+
+        if balance <= 0:
+            await update.message.reply_text(
+                "❌ У вас пока нет средств для вывода.",
+                reply_markup=main_menu(),
+            )
+            return
+
+        context.user_data["choosing_withdraw_method"] = True
+
+        await update.message.reply_text(
+            f"💸 Доступно для вывода: ${balance:.2f}\n\n"
+            "Выберите способ вывода:",
+            reply_markup=ReplyKeyboardMarkup(
+                [
+                    [KeyboardButton("CryptoBot")],
+                    [KeyboardButton("xRocket")],
+                    [KeyboardButton("⬅️ Назад")],
+                ],
+                resize_keyboard=True,
+            ),
+        )
+
     elif text == "📱 Мои номера":
-        user_id = update.effective_user.id
         with db() as conn:
             rows = conn.execute(
                 "SELECT id, operator, status FROM submissions "
@@ -626,12 +874,17 @@ async def menu_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 for row in rows
             )
 
-        await update.message.reply_text(result, reply_markup=back_menu())
+        await update.message.reply_text(
+            result,
+            reply_markup=back_menu(),
+        )
 
     elif context.user_data.get("awaiting_photo"):
         await update.message.reply_text(
-            "Отправьте фотографию подтверждения eSIM или нажмите «⬅️ Назад»."
+            "Отправьте фотографию подтверждения eSIM "
+            "или нажмите «⬅️ Назад»."
         )
+
 
 def main():
     init_db()
