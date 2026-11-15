@@ -4,7 +4,11 @@ import logging
 from datetime import datetime, timezone
 
 from telegram import (
-    Update, InlineKeyboardButton, InlineKeyboardMarkup,
+    Update,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    KeyboardButton,
+    ReplyKeyboardMarkup,
 )
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler, MessageHandler,
@@ -96,14 +100,24 @@ def save_user(user):
 
 
 def main_menu():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📲 Сдать eSIM", callback_data="sell")],
-        [
-            InlineKeyboardButton("👤 Профиль", callback_data="profile"),
-            InlineKeyboardButton("💰 Баланс", callback_data="balance"),
-        ],
-        [InlineKeyboardButton("📱 Мои номера", callback_data="my_requests")],
-    ])
+    keyboard = [
+        [KeyboardButton("📲 Сдать eSIM"), KeyboardButton("👤 Профиль")],
+        [KeyboardButton("💰 Баланс"), KeyboardButton("📱 Мои номера")],
+    ]
+    return ReplyKeyboardMarkup(
+        keyboard,
+        resize_keyboard=True,
+        is_persistent=True,
+    )
+
+
+def back_menu():
+    keyboard = [[KeyboardButton("⬅️ Назад")]]
+    return ReplyKeyboardMarkup(
+        keyboard,
+        resize_keyboard=True,
+        is_persistent=True,
+    )
 
 
 def admin_menu():
@@ -360,7 +374,94 @@ async def set_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("Оператор не найден. Проверьте название.")
 
+async def menu_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
 
+    if text == "⬅️ Назад":
+        context.user_data.clear()
+        await update.message.reply_text(
+            "Главное меню SIMORA. Выберите действие:",
+            reply_markup=main_menu(),
+        )
+        return
+
+    if context.user_data.get("choosing_operator") and text in OPERATORS:
+        context.user_data["operator"] = text
+        context.user_data["awaiting_photo"] = True
+        context.user_data["choosing_operator"] = False
+
+        await update.message.reply_text(
+            f"Вы выбрали: {text}\n\nТеперь отправьте фотографию подтверждения eSIM.",
+            reply_markup=back_menu(),
+        )
+        return
+
+    if text == "📲 Сдать eSIM":
+        with db() as conn:
+            rows = conn.execute("SELECT operator, price FROM prices").fetchall()
+
+        prices = {row["operator"]: row["price"] for row in rows}
+
+        keyboard = [
+            [KeyboardButton(f"{op} — {prices.get(op, OPERATOR_REWARDS[op])}")]
+            for op in OPERATORS
+        ]
+        keyboard.append([KeyboardButton("⬅️ Назад")])
+
+        context.user_data["choosing_operator"] = True
+
+        await update.message.reply_text(
+            "Выберите оператора eSIM:",
+            reply_markup=ReplyKeyboardMarkup(
+                keyboard,
+                resize_keyboard=True,
+                is_persistent=True,
+            ),
+        )
+
+    elif text == "👤 Профиль":
+        user_id = update.effective_user.id
+        with db() as conn:
+            count = conn.execute(
+                "SELECT COUNT(*) FROM submissions WHERE user_id=?",
+                (user_id,),
+            ).fetchone()[0]
+
+        await update.message.reply_text(
+            f"👤 Ваш профиль\nTelegram ID: {user_id}\nЗаявок: {count}",
+            reply_markup=back_menu(),
+        )
+
+    elif text == "💰 Баланс":
+        await update.message.reply_text(
+            "💰 Раздел «Баланс» готовится к запуску.",
+            reply_markup=back_menu(),
+        )
+
+    elif text == "📱 Мои номера":
+        user_id = update.effective_user.id
+        with db() as conn:
+            rows = conn.execute(
+                "SELECT id, operator, status FROM submissions "
+                "WHERE user_id=? ORDER BY id DESC LIMIT 10",
+                (user_id,),
+            ).fetchall()
+
+        if not rows:
+            result = "У вас пока нет заявок."
+        else:
+            result = "📱 Ваши заявки:\n" + "\n".join(
+                f"#{row['id']} — {row['operator']} — "
+                f"{STATUSES.get(row['status'], row['status'])}"
+                for row in rows
+            )
+
+        await update.message.reply_text(result, reply_markup=back_menu())
+
+    elif context.user_data.get("awaiting_photo"):
+        await update.message.reply_text(
+            "Пожалуйста, отправьте фотографию подтверждения eSIM или нажмите «⬅️ Назад»."
+        )
 def main():
     init_db()
     app = Application.builder().token(BOT_TOKEN).build()
@@ -369,6 +470,7 @@ def main():
     app.add_handler(CommandHandler("admin", admin))
     app.add_handler(CommandHandler("request", request_details))
     app.add_handler(CommandHandler("price", set_price))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, menu_text))
     app.add_handler(CallbackQueryHandler(callback))
     app.add_handler(MessageHandler(filters.PHOTO, receive_photo))
     log.info("SIMORA bot starting")
