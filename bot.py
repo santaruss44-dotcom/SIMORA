@@ -191,20 +191,25 @@ async def show_prices(chat_id, context):
 
 
 
+
 async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
     user_id = q.from_user.id
     data = q.data
 
+    # Проверка доступа администратора
     if (
-    data.startswith("admin_")
-    or data.startswith("decision:")
-    or data.startswith("reject_reason:")
-) and user_id != ADMIN_ID:
-        await q.edit_message_text("Нет доступа.")
+        data.startswith("admin_")
+        or data.startswith("decision:")
+        or data.startswith("reject_reason:")
+        or data.startswith("withdraw_paid:")
+        or data.startswith("withdraw_reject:")
+    ) and user_id != ADMIN_ID:
+        await context.bot.send_message(user_id, "Нет доступа.")
         return
 
+    # Выбор оператора
     if data == "sell":
         with db() as conn:
             rows = conn.execute(
@@ -226,8 +231,7 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup(buttons),
         )
 
-    
-    
+    # Принятие или отклонение eSIM
     elif data.startswith("decision:"):
         try:
             _, decision, submission_id = data.split(":")
@@ -252,6 +256,7 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     ),
                 ]
             ])
+
             await q.edit_message_caption(
                 caption=f"Заявка #{submission_id}\nВыберите причину отказа:",
                 reply_markup=keyboard,
@@ -334,6 +339,7 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Начислено: ${amount:.2f}",
         )
 
+    # Причина отказа по eSIM
     elif data.startswith("reject_reason:"):
         try:
             _, reason, submission_id = data.split(":")
@@ -376,41 +382,155 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Причина: {reasons[reason]}",
         )
 
-    
+    # Подтверждение оплаты вывода
+    elif data.startswith("withdraw_paid:"):
+        try:
+            withdrawal_id = int(data.split(":")[1])
+        except (ValueError, IndexError):
+            return
 
-    
+        with db() as conn:
+            conn.execute("BEGIN IMMEDIATE")
 
+            row = conn.execute(
+                "SELECT user_id, amount, method FROM withdrawals "
+                "WHERE id=? AND status='pending'",
+                (withdrawal_id,),
+            ).fetchone()
+
+            if not row:
+                await context.bot.send_message(
+                    ADMIN_ID,
+                    "Заявка на вывод уже обработана или не найдена.",
+                )
+                return
+
+            updated = conn.execute(
+                "UPDATE withdrawals SET status='paid', processed_at=? "
+                "WHERE id=? AND status='pending'",
+                (
+                    datetime.now(timezone.utc).isoformat(),
+                    withdrawal_id,
+                ),
+            )
+
+            if updated.rowcount != 1:
+                return
+
+        await q.edit_message_text(
+            f"✅ Заявка на вывод #{withdrawal_id} оплачена.\n\n"
+            f"Пользователь: {row['user_id']}\n"
+            f"Способ: {row['method']}\n"
+            f"Сумма: ${row['amount']:.2f}"
+        )
+
+        await context.bot.send_message(
+            row["user_id"],
+            f"✅ Ваша заявка на вывод #{withdrawal_id} оплачена!\n"
+            f"Способ: {row['method']}\n"
+            f"Сумма: ${row['amount']:.2f}",
+        )
+
+    # Отказ в выводе и возврат денег
+    elif data.startswith("withdraw_reject:"):
+        try:
+            withdrawal_id = int(data.split(":")[1])
+        except (ValueError, IndexError):
+            return
+
+        with db() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+
+            row = conn.execute(
+                "SELECT user_id, amount, method FROM withdrawals "
+                "WHERE id=? AND status='pending'",
+                (withdrawal_id,),
+            ).fetchone()
+
+            if not row:
+                await context.bot.send_message(
+                    ADMIN_ID,
+                    "Заявка на вывод уже обработана или не найдена.",
+                )
+                return
+
+            updated = conn.execute(
+                "UPDATE withdrawals SET status='rejected', processed_at=? "
+                "WHERE id=? AND status='pending'",
+                (
+                    datetime.now(timezone.utc).isoformat(),
+                    withdrawal_id,
+                ),
+            )
+
+            if updated.rowcount != 1:
+                return
+
+            conn.execute(
+                "INSERT OR IGNORE INTO balances(user_id, amount) VALUES (?, 0)",
+                (row["user_id"],),
+            )
+
+            conn.execute(
+                "UPDATE balances SET amount=amount+? WHERE user_id=?",
+                (row["amount"], row["user_id"]),
+            )
+
+        await q.edit_message_text(
+            f"❌ Заявка на вывод #{withdrawal_id} отклонена.\n"
+            f"Возвращено пользователю: ${row['amount']:.2f}"
+        )
+
+        await context.bot.send_message(
+            row["user_id"],
+            f"❌ Ваша заявка на вывод #{withdrawal_id} отклонена.\n"
+            f"Сумма ${row['amount']:.2f} возвращена на баланс.",
+        )
+
+    # Баланс
     elif data == "balance":
         await q.edit_message_text(
             "💰 Раздел «Баланс» готовится к запуску.",
             reply_markup=main_menu(),
         )
 
+    # Профиль
     elif data == "profile":
         with db() as conn:
             count = conn.execute(
-                "SELECT COUNT(*) FROM submissions WHERE user_id=?", (user_id,)
+                "SELECT COUNT(*) FROM submissions WHERE user_id=?",
+                (user_id,),
             ).fetchone()[0]
+
         await q.edit_message_text(
             f"Ваш профиль\nTelegram ID: {user_id}\nЗаявок: {count}",
             reply_markup=main_menu(),
         )
 
+    # Мои номера
     elif data == "my_requests":
         with db() as conn:
             rows = conn.execute(
                 "SELECT id, operator, status, created_at FROM submissions "
-                "WHERE user_id=? ORDER BY id DESC LIMIT 10", (user_id,)
+                "WHERE user_id=? ORDER BY id DESC LIMIT 10",
+                (user_id,),
             ).fetchall()
+
         if not rows:
-            text = "У вас пока нет заявок."
+            result = "У вас пока нет заявок."
         else:
-            text = "Ваши последние заявки:\n" + "\n".join(
-                f"#{r['id']} — {r['operator']} — {STATUSES.get(r['status'], r['status'])}"
+            result = "Ваши последние заявки:\n" + "\n".join(
+                f"#{r['id']} — {r['operator']} — "
+                f"{STATUSES.get(r['status'], r['status'])}"
                 for r in rows
             )
-        await q.edit_message_text(text, reply_markup=main_menu())
 
+        await q.edit_message_text(
+            result,
+            reply_markup=main_menu(),
+        )
+
+    # Информация
     elif data == "info":
         await q.edit_message_text(
             "SIMORA принимает заявки на добровольную продажу eSIM. "
@@ -419,40 +539,71 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=main_menu(),
         )
 
+    # Новые заявки администратора
     elif data == "admin_new":
         with db() as conn:
             rows = conn.execute(
                 "SELECT id, user_id, operator, created_at FROM submissions "
                 "WHERE status='new' ORDER BY id DESC LIMIT 10"
             ).fetchall()
-        if not rows:
-            await q.edit_message_text("Новых заявок нет.", reply_markup=admin_menu())
-            return
-        await q.edit_message_text("Новые заявки:\n" + "\n".join(
-            f"#{r['id']} | {r['operator']} | пользователь {r['user_id']}"
-            for r in rows
-        ) + "\n\nЧтобы открыть заявку, отправьте /request НОМЕР")
 
+        if not rows:
+            await q.edit_message_text(
+                "Новых заявок нет.",
+                reply_markup=admin_menu(),
+            )
+            return
+
+        await q.edit_message_text(
+            "Новые заявки:\n" + "\n".join(
+                f"#{r['id']} | {r['operator']} | пользователь {r['user_id']}"
+                for r in rows
+            ) + "\n\nЧтобы открыть заявку, отправьте /request НОМЕР"
+        )
+
+    # Цены
     elif data == "admin_prices":
         with db() as conn:
-            rows = conn.execute("SELECT operator, price FROM prices").fetchall()
-        text = "Текущие цены:\n" + "\n".join(
+            rows = conn.execute(
+                "SELECT operator, price FROM prices"
+            ).fetchall()
+
+        result = "Текущие цены:\n" + "\n".join(
             f"{r['operator']}: {r['price']}" for r in rows
         )
-        text += "\n\nИзменить: /price НАЗВАНИЕ_ОПЕРАТОРА ЦЕНА\nПример: /price МТС $19"
-        await q.edit_message_text(text, reply_markup=admin_menu())
 
+        result += (
+            "\n\nИзменить: /price НАЗВАНИЕ_ОПЕРАТОРА ЦЕНА"
+            "\nПример: /price МТС $19"
+        )
+
+        await q.edit_message_text(
+            result,
+            reply_markup=admin_menu(),
+        )
+
+    # Статистика
     elif data == "admin_stats":
         with db() as conn:
-            users = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
-            apps = conn.execute("SELECT COUNT(*) FROM submissions").fetchone()[0]
+            users = conn.execute(
+                "SELECT COUNT(*) FROM users"
+            ).fetchone()[0]
+
+            apps = conn.execute(
+                "SELECT COUNT(*) FROM submissions"
+            ).fetchone()[0]
+
             new = conn.execute(
                 "SELECT COUNT(*) FROM submissions WHERE status='new'"
             ).fetchone()[0]
+
         await q.edit_message_text(
-            f"Пользователей: {users}\nВсего заявок: {apps}\nНовых заявок: {new}",
+            f"Пользователей: {users}\n"
+            f"Всего заявок: {apps}\n"
+            f"Новых заявок: {new}",
             reply_markup=admin_menu(),
         )
+
 
             
 
