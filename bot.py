@@ -208,33 +208,39 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     
+    
     elif data.startswith("decision:"):
-        _, decision, submission_id = data.split(":")
-        submission_id = int(submission_id)
+        try:
+            _, decision, submission_id = data.split(":")
+            submission_id = int(submission_id)
+        except (ValueError, TypeError):
+            return
 
         if decision not in ("accept", "reject"):
             return
 
+        amount = 0.0
+        new_status = "rejected" if decision == "reject" else "accepted"
+
         with db() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+
             row = conn.execute(
                 "SELECT user_id, operator, status FROM submissions WHERE id=?",
                 (submission_id,),
             ).fetchone()
 
             if not row:
-                await q.answer("Заявка не найдена.", show_alert=True)
+                await context.bot.send_message(
+                    ADMIN_ID, "Заявка не найдена."
+                )
                 return
 
             if row["status"] != "new":
-                await q.answer("Эта заявка уже обработана.", show_alert=True)
+                await context.bot.send_message(
+                    ADMIN_ID, "Эта заявка уже обработана."
+                )
                 return
-
-            new_status = "accepted" if decision == "accept" else "rejected"
-
-            conn.execute(
-                "UPDATE submissions SET status=? WHERE id=? AND status='new'",
-                (new_status, submission_id),
-            )
 
             if decision == "accept":
                 price_row = conn.execute(
@@ -242,19 +248,41 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     (row["operator"],),
                 ).fetchone()
 
-                if not price_row or not str(price_row["price"]).startswith("$"):
-                    await q.answer("Не удалось определить цену.", show_alert=True)
+                if not price_row:
+                    await context.bot.send_message(
+                        ADMIN_ID, "Не найдена цена оператора."
+                    )
                     return
 
-                amount = float(str(price_row["price"]).replace("$", "").strip())
+                try:
+                    amount = float(
+                        str(price_row["price"]).replace("$", "").strip()
+                    )
+                except (ValueError, TypeError):
+                    amount = 0
 
+                if not amount > 0 or amount == float("inf"):
+                    await context.bot.send_message(
+                        ADMIN_ID, "Некорректная цена. Заявка не обработана."
+                    )
+                    return
+
+            updated = conn.execute(
+                "UPDATE submissions SET status=? WHERE id=? AND status='new'",
+                (new_status, submission_id),
+            )
+
+            if updated.rowcount != 1:
+                return
+
+            if decision == "accept":
                 conn.execute(
                     "INSERT OR IGNORE INTO balances(user_id, amount) VALUES (?, 0)",
                     (row["user_id"],),
                 )
 
-                conn.execute(
-                    "INSERT INTO transactions "
+                transaction = conn.execute(
+                    "INSERT OR IGNORE INTO transactions "
                     "(user_id, submission_id, amount, description, created_at) "
                     "VALUES (?, ?, ?, ?, ?)",
                     (
@@ -266,10 +294,21 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     ),
                 )
 
-                conn.execute(
-                    "UPDATE balances SET amount=amount+? WHERE user_id=?",
-                    (amount, row["user_id"]),
-                )
+                if transaction.rowcount == 1:
+                    conn.execute(
+                        "UPDATE balances SET amount=amount+? WHERE user_id=?",
+                        (amount, row["user_id"]),
+                    )
+
+        await context.bot.send_message(
+            row["user_id"],
+            f"Заявка #{submission_id}: {STATUSES[new_status]}."
+            + (
+                f"\nНачислено: ${amount:.2f}"
+                if decision == "accept"
+                else ""
+            ),
+        )
 
         await context.bot.send_message(
             row["user_id"],
