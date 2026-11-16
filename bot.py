@@ -975,7 +975,8 @@ async def menu_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(
             ADMIN_ID,
             f"💸 НОВАЯ ЗАЯВКА НА ВЫВОД #{withdrawal_id}\n\n"
-            f"Пользователь: {user_id}\n"
+            f"Пользователь: @{update.effective_user.username or 'не указан'}\n"
+f"ID пользователя: {user_id}\n"
             f"Способ: {method}\n"
             f"Сумма: ${amount:.2f}\n"
             f"Многоразовый счёт:\n{link}",
